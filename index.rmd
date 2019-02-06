@@ -1,0 +1,31 @@
+---
+title: "national-viewer"
+output:
+  flexdashboard::flex_dashboard:
+    vertical_layout: scroll
+    logo: logo.svg
+    theme: bootstrap
+    source_code: "https://github.com/hesscl/searent/tree/natrent/dash/national-viewer.Rmd"
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(lubridate)
+library(sqldf)
+library(DT)
+
+db <- dbConnect(SQLite(), "R:/Project/national-rent/data/natrent.db")
+initExtension(db)
+cl <- tbl(db, "clean_cl")
+```
+
+Home
+=====================================
+
+```{r}
+medRent <- dbGetQuery(db, "SELECT listingLoc, median(`cleanRent`) as medRent FROM clean_cl GROUP BY listingLoc;")
+
+q05Rent <- dbGetQuery(db, "SELECT listingLoc, ")
+
+```
