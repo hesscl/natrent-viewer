@@ -5,27 +5,67 @@ output:
     vertical_layout: scroll
     logo: logo.svg
     theme: bootstrap
-    source_code: "https://github.com/hesscl/searent/tree/natrent/dash/national-viewer.Rmd"
+    source_code: "https://github.com/hesscl/natrent-viewer"
 ---
 
 ```{r setup, include=FALSE}
+library(yaml)
 library(flexdashboard)
 library(tidyverse)
 library(lubridate)
 library(sqldf)
 library(DT)
 
-db <- dbConnect(SQLite(), "R:/Project/national-rent/data/natrent.db")
-initExtension(db)
-cl <- tbl(db, "clean_cl")
+#store credentials at base dir of UDrive (H:/) as YAML
+cred <- read_yaml("H:/natrent0.yaml")
+
+#connect to natrent0 using loaded credentials
+DB <- dbConnect(RPostgres::Postgres(),
+                dbname = "natrent",
+                host = "natrent0.csde.washington.edu",
+                port = 5432, 
+                user = names(cred),
+                password = cred[[names(cred)]])
+
+clean_tbl <- tbl(DB, "clean") #clean listing table
+cbsa_tbl <- tbl(DB, "cbsa")
 ```
 
-Home
+Metro Rent Distribution
 =====================================
 
 ```{r}
-medRent <- dbGetQuery(db, "SELECT listingLoc, median(`cleanRent`) as medRent FROM clean_cl GROUP BY listingLoc;")
+metro_sum <- clean_tbl %>%
+  filter(!is.na(STATEFP10)) %>%
+  left_join(cbsa_tbl, by = c("STATEFP10", "COUNTYFP10")) %>%
+  group_by(cbsaName) %>%
+  summarize(n = n(),
+            rent_q05 = quantile(cleanRent, .05),
+            rent_q25 = quantile(cleanRent, .25),
+            rent_q50 = quantile(cleanRent, .5),
+            rent_q75 = quantile(cleanRent, .75),
+            rent_q95 = quantile(cleanRent, .95)) %>% 
+  filter(!is.na(rent_q50), n >= 1000) %>%
+  arrange(desc(n)) %>%
+  collect
 
-q05Rent <- dbGetQuery(db, "SELECT listingLoc, ")
-
+DT::datatable(metro_sum, options = list(pageLength = 100))
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
