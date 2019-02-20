@@ -8,7 +8,6 @@ library(leaflet)
 library(pool)
 library(yaml)
 library(shiny)
-library(shinydashboard)
 
 #make sure wd is base of natrent-viewer repo
 setwd("H:/natrent-viewer")
