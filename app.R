@@ -33,61 +33,56 @@ onStop(function() {
 
 
 #Client UI
-ui <- dashboardPage(
-  dashboardHeader(
-    title = "natrent@UW"
-    ),
-  dashboardSidebar(
-    sidebarMenu(
-      menuItem("Dashboard", tabName = "dashboard", icon = icon("dashboard")),
-      menuItem("Widgets", tabName = "widgets", icon = icon("th"))
-    )
-  ),
-  dashboardBody(
-    tags$div(style="position: absolute; top: 0; left: 0; right: 0; bottom: 0"),
-    tabItems(
-      # First tab content
-      tabItem(tabName = "dashboard",
-              fluidPage(
-                column(width = 9, 
-                       box(width = NULL, 
-                           leafletOutput("metro_map", width = "100%", height = "1000px"))),
-                column(width = 3,
-                       box(width = NULL,
-                           title = "Controls",
-                           selectInput("metro_select", "Metro:", 
-                                       choices = natrent %>% 
-                                                 tbl("cbsa17") %>% 
-                                                 filter(lsad == "M1") %>%
-                                                 pull(name) ,
-                                       selected = "Seattle-Tacoma-Bellevue, WA"),
-                           uiOutput("county_select"),
-                           selectInput("bed_size_select", "Bedroom Size:",
-                                       choices = c(
-                                        "Studio" = 0,
-                                        "1 Bedroom" = 1,
-                                        "2 Bedroom" = 2,
-                                        "3 Bedroom" = 3),
-                                      selected = 1),
-                           selectInput("quantile_select", "Asking Rent Quantile:",
-                                       choices = c(
-                                         "5th Quantile" = .05,
-                                         "25th Quantile" = .25,
-                                         "40th Quantile" = .4,
-                                         "Median" = .50,
-                                         "75th Quantile" = .75,
-                                         "95th Quantile" = .95),
-                                       selected = .5)
-                       )
-                    )
+ui <- navbarPage("natrent@UW", id = "nav",
+         tabPanel("Map",
+            div(class="outer",
+                
+                tags$head(
+                  # Include our custom CSS
+                  includeCSS("styles.css")
+                  #includeScript("gomap.js")
+                ),
+                
+                # If not using custom CSS, set height of leafletOutput to a number instead of percent
+                leafletOutput("map", width="100%", height="100%"),
+                
+                # Shiny versions prior to 0.11 should use class = "modal" instead.
+                absolutePanel(id = "controls", class = "panel panel-default", fixed = TRUE,
+                              draggable = TRUE, top = 60, left = "auto", right = 20, bottom = "auto",
+                              width = 330, height = "auto",
+                              
+                              h3("Controls"),
+                              
+                              selectInput("metro_select", "Metro:", 
+                                          choices = natrent %>% 
+                                            tbl("cbsa17") %>% 
+                                            filter(lsad == "M1") %>%
+                                            pull(name) ,
+                                          selected = "Seattle-Tacoma-Bellevue, WA"),
+                              uiOutput("county_select"),
+                              selectInput("bed_size_select", "Bedroom Size:",
+                                          choices = c(
+                                            "Studio" = 0,
+                                            "1 Bedroom" = 1,
+                                            "2 Bedroom" = 2,
+                                            "3 Bedroom" = 3),
+                                          selected = 1),
+                              selectInput("quantile_select", "Asking Rent Quantile:",
+                                          choices = c(
+                                            "5th Quantile" = .05,
+                                            "25th Quantile" = .25,
+                                            "40th Quantile" = .4,
+                                            "Median" = .50,
+                                            "75th Quantile" = .75,
+                                            "95th Quantile" = .95),
+                                          selected = .5) #,
+                              
+                              #plotOutput("histCentile", height = 200),
+                              #plotOutput("scatterCollegeIncome", height = 250)
+                              )
+                )
             )
-          ) #,
-      
-      # Second tab content
-      #tabItem(tabName = "widgets",
-      #        h2("Widgets tab content")
-      #        )
-)))
+         )
 
 
 #Server Backend
@@ -123,7 +118,7 @@ server <- function(input, output) {
                   select(cbsafp), by = "cbsafp") %>%
       pull(name) 
     
-    selectInput("county_select", "Choose County", counties,
+    selectInput("county_select", "County:", counties,
                 selected = "King")
   })
   
@@ -144,7 +139,7 @@ server <- function(input, output) {
   })
   
   #render map dynamically based on user's input for state
-  output$metro_map <- renderLeaflet({
+  output$map <- renderLeaflet({
     
     if(length(input$county_select) == 0){
       return(NULL)
@@ -154,6 +149,12 @@ server <- function(input, output) {
       #reactive result will be what we plot
       result <- db_result()
       
+      
+      labels <- sprintf(
+        "<strong>Tract: %s</strong><br/>%gth Quantile: $%g",
+        result$geoid, type.convert(input$quantile_select) * 100, result$quantile
+      ) %>% lapply(htmltools::HTML)
+      
       pal <- colorNumeric("viridis", domain = result$quantile)
       
       leaflet(result) %>%
@@ -162,16 +163,33 @@ server <- function(input, output) {
                     fillOpacity = .75,
                     color = "white",
                     opacity = 1,
-                    weight = .5) %>%
+                    weight = .5,
+                    highlight = highlightOptions(
+                      weight = 5,
+                      color = "#666"),
+                    label = labels,
+                    labelOptions = labelOptions(
+                      style = list("font-weight" = "normal", padding = "3px 8px"),
+                      textsize = "15px",
+                      direction = "auto")) %>%
         addLegend(pal = pal, 
                   values = ~ quantile,
                   position = "bottomleft")
-
-      #visualize the simple feature with sf
-      #ggplot(db_result(), aes(fill = quantile)) +
-      #  geom_sf(color = alpha("white",  .5), size = 0.2) +
-      #  scale_fill_viridis_c(option = "D", direction = -1)
+      
     }
+  })
+  
+  #render rent histogram based on the current sf result
+  output$hist <- renderPlot({
+    
+    if(length(input$county_select) == 0){
+      return(NULL)
+      
+    } else{
+      ggplot(result, aes(x = quantile)) +
+        geom_density()
+    }
+    
   })
 }
 
