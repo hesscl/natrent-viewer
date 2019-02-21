@@ -30,6 +30,27 @@ onStop(function() {
   poolClose(natrent)
 })
 
+#### Prep values we will want to draw on --------------------------------------
+
+#distinct locations from Craigslist listings
+locs <- natrent %>%
+  tbl("clean") %>%
+  distinct(listing_loc) %>%
+  pull(listing_loc) %>%
+  str_sub(1, 8)
+
+#CBSA names
+metros <- natrent %>%
+  tbl("cbsa17") %>%
+  filter(memi == "1") %>%
+  distinct(name) %>%
+  arrange(name) %>%
+  collect() %>%
+  filter(str_detect(name, paste(locs, sep = "", collapse = "|"))) %>%
+  pull(name)
+
+
+#### Application --------------------------------------------------------------
 
 #Client UI
 ui <- navbarPage("natrent@UW", id = "nav",
@@ -50,15 +71,17 @@ ui <- navbarPage("natrent@UW", id = "nav",
                               draggable = TRUE, top = 60, left = "auto", right = 20, bottom = "auto",
                               width = 330, height = "auto",
                               
-                              h3("Controls"),
+                              #title
+                              h3("Map Controls"),
                               
-                              selectInput("metro_select", "Metro:", 
-                                          choices = natrent %>% 
-                                            tbl("cbsa17") %>% 
-                                            filter(lsad == "M1") %>%
-                                            pull(name) ,
+                              #metro input populated based on values queried above
+                              selectInput("metro_select", "Metro:", metros,
                                           selected = "Seattle-Tacoma-Bellevue, WA"),
+                              
+                              #county input populated dynamically based on the metro chosen
                               uiOutput("county_select"),
+                              
+                              #bedroom size input populated based on static options
                               selectInput("bed_size_select", "Bedroom Size:",
                                           choices = c(
                                             "Studio" = 0,
@@ -66,6 +89,8 @@ ui <- navbarPage("natrent@UW", id = "nav",
                                             "2 Bedroom" = 2,
                                             "3 Bedroom" = 3),
                                           selected = 1),
+                              
+                              #quantile input populated based on static options
                               selectInput("quantile_select", "Asking Rent Quantile:",
                                           choices = c(
                                             "5th Quantile" = .05,
@@ -74,10 +99,10 @@ ui <- navbarPage("natrent@UW", id = "nav",
                                             "Median" = .50,
                                             "75th Quantile" = .75,
                                             "95th Quantile" = .95),
-                                          selected = .5) #,
+                                          selected = .5) ,
                               
-                              #plotOutput("histCentile", height = 200),
-                              #plotOutput("scatterCollegeIncome", height = 250)
+                              #plot the distribution of the quantile among tracts in county
+                              plotOutput("dens", height = 200)
                               )
                 )
             )
@@ -87,106 +112,144 @@ ui <- navbarPage("natrent@UW", id = "nav",
 #Server Backend
 server <- function(input, output) {
   
-  #compute the n per tract in a metro county, return sf
-  base_sql <-  "SELECT quantile(e.clean_rent, ?quantile) AS quantile, ST_Transform(f.geometry, 4326), f.geoid
-                FROM clean e
-                JOIN (
-                      SELECT c.geoid, c.geometry
-                      FROM tract17 c
-                      JOIN (
-                            SELECT b.statefp, b.countyfp, a.cbsafp, a.name AS metro_name, b.name AS county_name
-                            FROM cbsa17 a
-                            JOIN county17 b ON a.cbsafp = b.cbsafp
-                            WHERE a.name = ?metro AND b.name = ?county
-                      ) d ON c.statefp = d.statefp AND c.countyfp = d.countyfp
-                ) f ON ST_Within(e.geometry, f.geometry)
-                WHERE e.listing_date >= '2019-01-01' AND
-                      e.clean_beds = ?beds AND
-                      e.listing_loc LIKE ?loc
-                GROUP BY f.geoid, f.geometry
-                HAVING count(*) >= 5
-                ORDER BY f.geoid"
+  #### Define SQL Queries
   
-  #populate the counties selection based on metro selection
-  output$county_select <- renderUI({
+  #compute the input quantile per tract in a metro county, return sf
+  map_sql <-  "SELECT quantile(e.clean_rent, ?quantile) AS quantile, ST_Transform(f.geometry, 4326), f.geoid
+               FROM clean e
+               RIGHT JOIN (
+                     SELECT c.geoid, c.geometry
+                     FROM tract17 c
+                     INNER JOIN (
+                           SELECT b.statefp, b.countyfp, a.cbsafp, a.name AS metro_name, b.name AS county_name
+                           FROM cbsa17 a
+                           INNER JOIN county17 b ON a.cbsafp = b.cbsafp
+                           WHERE a.name = ?metro AND b.name = ?county
+                     ) d ON c.statefp = d.statefp AND c.countyfp = d.countyfp
+               ) f ON ST_Within(e.geometry, f.geometry)
+               WHERE e.listing_date >= '2019-01-01' AND
+                     e.clean_beds = ?beds AND
+                     e.listing_loc LIKE ?loc
+               GROUP BY f.geoid, f.geometry
+               HAVING count(*) >= 5
+               ORDER BY f.geoid"
     
-    counties <- natrent %>% 
-      tbl("county17") %>%
-      semi_join(tbl(natrent, "cbsa17") %>%
-                  filter(name == input$metro_select) %>%
-                  select(cbsafp), by = "cbsafp") %>%
-      pull(name) 
+  #compute n per county with names for input dropdown
+  cty_sql <- "SELECT count(*) AS cty_n, d.name
+              FROM clean c
+              INNER JOIN (
+                          SELECT a.name, a.geometry
+                          FROM county17 a
+                          JOIN cbsa17 b ON a.cbsafp = b.cbsafp
+                          WHERE b.name = ?metro 
+              ) d ON ST_Within(c.geometry, d.geometry)
+              WHERE c.listing_date >= ?cutoff AND
+              c.listing_loc LIKE ?loc
+              GROUP BY d.name
+              ORDER BY cty_n DESC"
+  
+  #### Assign reactive expressions for the query results
+  
+  #create a reactive data.frame for caching the county values
+  cty_query_result <- reactive({
     
-    selectInput("county_select", "County:", counties,
-                selected = "King")
+    #interpolate the query for metro's county counts of listings for past week, descending n
+    cty_query <- sqlInterpolate(natrent, cty_sql,
+                                metro = input$metro_select,
+                                loc = paste0(substr(str_split_fixed(input$metro_select, 
+                                                                    pattern = "\\-", n = 2)[1], 1, 8), "%"),
+                                cutoff = as.character(Sys.Date() - 7))
+    
+    #submit the query, return as fn() output
+    dbGetQuery(natrent, cty_query)
   })
   
-  #create a reactive data frame for caching the query result
-  db_result <- reactive({
+  #create a reactive data frame for caching the primary query result
+  map_query_result <- reactive({
     
     #interpolate the values from input into the sql
-    query_rent <- sqlInterpolate(natrent, base_sql,
-                                 metro = input$metro_select,
-                                 loc = paste0(substr(str_split_fixed(input$metro_select, 
-                                          pattern = "\\-", n = 2)[1], 1, 8), "%"),
-                                 county = input$county_select,
-                                 beds = input$bed_size_select,
-                                 quantile = input$quantile_select)
+    map_query <- sqlInterpolate(natrent, map_sql,
+                                metro = input$metro_select,
+                                loc = paste0(substr(str_split_fixed(input$metro_select, 
+                                                                    pattern = "\\-", n = 2)[1], 1, 8), "%"),
+                                county = input$county_select,
+                                beds = input$bed_size_select,
+                                quantile = input$quantile_select)
     
-    #read the query result into memory
-    st_read(natrent, query = query_rent)
+    #read the query result into memory, return as fn output
+    st_read(natrent, query = map_query)
   })
+  
+  #### Use the county query results for the UI
+  
+  #populate the counties input dropdown based on metro selection
+  output$county_select <- renderUI({
+    
+    selectInput("county_select", "County:", 
+                choices = cty_query_result()$name)
+  })
+  
+  #### Generate the focal visualizations
   
   #render map dynamically based on user's input for state
   output$map <- renderLeaflet({
     
     if(length(input$county_select) == 0){
-      return(NULL)
-      
-    } else{
-      
-      #reactive result will be what we plot
-      result <- db_result()
-      
-      
-      labels <- sprintf(
-        "<strong>Tract: %s</strong><br/>%gth Quantile: $%g",
-        result$geoid, type.convert(input$quantile_select) * 100, result$quantile
-      ) %>% lapply(htmltools::HTML)
-      
-      pal <- colorNumeric("viridis", domain = result$quantile)
-      
-      leaflet(result) %>%
-        addTiles() %>%
-        addPolygons(fillColor = ~ pal(quantile),
-                    fillOpacity = .75,
-                    color = "white",
-                    opacity = 1,
-                    weight = .5,
-                    highlight = highlightOptions(
-                      weight = 5,
-                      color = "#666"),
-                    label = labels,
-                    labelOptions = labelOptions(
-                      style = list("font-weight" = "normal", padding = "3px 8px"),
-                      textsize = "15px",
-                      direction = "auto")) %>%
-        addLegend(pal = pal, 
-                  values = ~ quantile,
-                  position = "bottomleft")
+      return()
       
     }
+    
+    validate(
+      need(nrow(map_query_result()) > 0, "")
+    )
+      
+    #format the labels for the hover over tooltip
+    labels <- sprintf(
+      "<strong>Tract: %s</strong><br/>%gth Quantile: $%g",
+      map_query_result()$geoid, type.convert(input$quantile_select) * 100, map_query_result()$quantile
+    ) %>% lapply(htmltools::HTML)
+    
+    #define a function for the choropleth scale
+    pal <- colorNumeric("magma", 
+                        domain = map_query_result()$quantile,
+                        reverse = TRUE)
+    
+    #plot the sf using leaflet
+    leaflet(map_query_result()) %>%
+      addTiles() %>%
+      addPolygons(fillColor = ~ pal(quantile),
+                  fillOpacity = .75,
+                  color = "white",
+                  opacity = 1,
+                  weight = .5,
+                  highlight = highlightOptions(
+                    weight = 5,
+                    color = "#666"),
+                  label = labels,
+                  labelOptions = labelOptions(
+                    style = list("font-weight" = "normal", padding = "3px 8px"),
+                    textsize = "15px",
+                    direction = "auto")) %>%
+      addLegend(pal = pal, 
+                values = ~ quantile,
+                title = paste0(type.convert(input$quantile_select) * 100, "th Quantile"),
+                position = "bottomleft")
   })
   
-  #render rent histogram based on the current sf result
-  output$hist <- renderPlot({
+  #render rent density curve based on the current sf result
+  output$dens <- renderPlot({
     
-    if(length(input$county_select) == 0){
+    if(length(input$metro_select) == 0 | length(input$county_select) == 0){
       return(NULL)
       
     } else{
-      ggplot(result, aes(x = quantile)) +
-        geom_density()
+      
+      ggplot(map_query_result(), aes(x = quantile)) +
+        geom_density() +
+        theme_minimal() +
+        scale_x_continuous(labels = scales::dollar) +
+        xlab(paste0("\n", type.convert(input$quantile_select) * 100, "th Quantile")) +
+        ylab("Density\n")
     }
     
   })
