@@ -44,7 +44,7 @@ match_collisions <- c("Albany, OR", "Albany, GA",  "Anniston-Oxford-Jacksonville
                       "Charleston, WV", "Charlottesville, VA", "Columbia, MO", "Columbus, GA-AL", 
                       "Cleveland, TN", "Columbus, IN", "Greenville, NC", 
                       "Deltona-Daytona Beach-Ormond Beach, FL", "Jackson, MI", "Jackson, TN",
-                      "Jacksonville, NC",  "Rochester, MN", "Springfield, OH", 
+                      "Jacksonville, NC",  "Rochester, MN", "Springfield, OH",  "Portland-South Portland, ME",
                       "Springfield, MO", "Springfield, IL", "Wichita Falls, TX")
 
 #CBSA names
@@ -59,7 +59,7 @@ metros <- natrent %>%
   pull(name)
 
 #accomodate the honolulu weirdness
-metros <- c(metros[1:37], metros[94], metros[38:93], metros[95:99])
+metros <- c(metros[1:37], metros[93], metros[38:69], "Poughkeepsie-Newburgh-Middletown, NY", metros[70:92], metros[94:98])
 
 #compile a crosswalk
 cw <- cbind.data.frame(locs, metros, stringsAsFactors = FALSE)
@@ -148,7 +148,7 @@ server <- function(input, output) {
                ) f ON ST_Within(e.geometry, f.geometry)
                WHERE e.listing_date >= '2019-01-01' AND
                      e.clean_beds = ?beds AND
-                     e.listing_loc LIKE ?loc
+                     e.listing_loc = ?loc
                GROUP BY f.geoid, f.statefp, f.countyfp, f.geometry
                HAVING count(*) >= 2
                ORDER BY f.geoid"
@@ -163,7 +163,7 @@ server <- function(input, output) {
                           WHERE b.name = ?metro 
               ) d ON ST_Within(c.geometry, d.geometry)
               WHERE c.listing_date >= ?cutoff AND
-              c.listing_loc LIKE ?loc
+              c.listing_loc = ?loc
               GROUP BY d.name
               ORDER BY cty_n DESC"
   
@@ -176,7 +176,7 @@ server <- function(input, output) {
     cty_query <- sqlInterpolate(natrent, cty_sql,
                                 metro = input$metro_select,
                                 loc = cw$locs[cw$metro == input$metro_select],
-                                cutoff = as.character(Sys.Date() - 7))
+                                cutoff = as.character(Sys.Date()-3))
     
     #submit the query, return as fn() output
     dbGetQuery(natrent, cty_query)
