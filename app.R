@@ -66,7 +66,7 @@ cw <- cbind.data.frame(locs, metros, stringsAsFactors = FALSE)
 
 #restore original loc names
 cw[59, 1] <- "New York City"
-cw[95, 1] <- "Washington DC"
+cw[96, 1] <- "Washington DC"
 
 
 #### Application --------------------------------------------------------------
