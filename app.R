@@ -9,11 +9,8 @@ library(pool)
 library(yaml)
 library(shiny)
 
-#make sure wd is base of natrent-viewer repo
-setwd("H:/natrent-viewer")
-
-#store credentials at base dir of UDrive (H:/) as YAML
-cred <- read_yaml("H:/natrent0.yaml")
+#store credentials read in from YAML
+cred <- read_yaml("./natrent0.yaml")
 
 #create a pool for database connections
 natrent <- dbPool(
@@ -22,7 +19,7 @@ natrent <- dbPool(
   host = "natrent0.csde.washington.edu",
   user = names(cred),
   password = cred[[names(cred)]],
-  bigint = "character"
+  bigint = "numeric"
 )
 
 #close the connection pool when the app stops
@@ -30,14 +27,25 @@ onStop(function() {
   poolClose(natrent)
 })
 
+
 #### Prep values we will want to draw on --------------------------------------
 
 #distinct locations from Craigslist listings
 locs <- natrent %>%
   tbl("clean") %>%
   distinct(listing_loc) %>%
-  pull(listing_loc) %>%
-  str_sub(1, 8)
+  arrange(listing_loc) %>%
+  pull(listing_loc) 
+locs[59] <- "New York"
+locs[96] <- "Washington"
+
+#create a vector of the smaller metros with same/similar names to ones we scrape
+match_collisions <- c("Albany, OR", "Albany, GA",  "Anniston-Oxford-Jacksonville, AL",
+                      "Charleston, WV", "Charlottesville, VA", "Columbia, MO", "Columbus, GA-AL", 
+                      "Cleveland, TN", "Columbus, IN", "Greenville, NC", 
+                      "Deltona-Daytona Beach-Ormond Beach, FL", "Jackson, MI", "Jackson, TN",
+                      "Jacksonville, NC",  "Rochester, MN", "Springfield, OH", 
+                      "Springfield, MO", "Springfield, IL", "Wichita Falls, TX")
 
 #CBSA names
 metros <- natrent %>%
@@ -45,9 +53,20 @@ metros <- natrent %>%
   filter(memi == "1") %>%
   distinct(name) %>%
   arrange(name) %>%
+  filter(!name %in% match_collisions) %>%
   collect() %>%
-  filter(str_detect(name, paste(locs, sep = "", collapse = "|"))) %>%
+  filter(str_detect(name, str_flatten(locs, collapse = "|"))) %>%
   pull(name)
+
+#accomodate the honolulu weirdness
+metros <- c(metros[1:37], metros[94], metros[38:93], metros[95:99])
+
+#compile a crosswalk
+cw <- cbind.data.frame(locs, metros, stringsAsFactors = FALSE)
+
+#restore original loc names
+cw[59, 1] <- "New York City"
+cw[95, 1] <- "Washington DC"
 
 
 #### Application --------------------------------------------------------------
@@ -75,7 +94,7 @@ ui <- navbarPage("natrent@UW", id = "nav",
                               h3("Map Controls"),
                               
                               #metro input populated based on values queried above
-                              selectInput("metro_select", "Metro:", metros,
+                              selectInput("metro_select", "Metro:", cw$metros,
                                           selected = "Seattle-Tacoma-Bellevue, WA"),
                               
                               #county input populated dynamically based on the metro chosen
@@ -115,10 +134,10 @@ server <- function(input, output) {
   #### Define SQL Queries
   
   #compute the input quantile per tract in a metro county, return sf
-  map_sql <-  "SELECT quantile(e.clean_rent, ?quantile) AS quantile, ST_Transform(f.geometry, 4326), f.geoid
+  map_sql <-  "SELECT quantile(e.clean_rent, ?quantile) AS quantile, ST_Transform(f.geometry, 4326), f.geoid, f.statefp, f.countyfp
                FROM clean e
                RIGHT JOIN (
-                     SELECT c.geoid, c.geometry
+                     SELECT c.geoid, c.countyfp, c.statefp, c.geometry
                      FROM tract17 c
                      INNER JOIN (
                            SELECT b.statefp, b.countyfp, a.cbsafp, a.name AS metro_name, b.name AS county_name
@@ -130,8 +149,8 @@ server <- function(input, output) {
                WHERE e.listing_date >= '2019-01-01' AND
                      e.clean_beds = ?beds AND
                      e.listing_loc LIKE ?loc
-               GROUP BY f.geoid, f.geometry
-               HAVING count(*) >= 5
+               GROUP BY f.geoid, f.statefp, f.countyfp, f.geometry
+               HAVING count(*) >= 2
                ORDER BY f.geoid"
     
   #compute n per county with names for input dropdown
@@ -156,8 +175,7 @@ server <- function(input, output) {
     #interpolate the query for metro's county counts of listings for past week, descending n
     cty_query <- sqlInterpolate(natrent, cty_sql,
                                 metro = input$metro_select,
-                                loc = paste0(substr(str_split_fixed(input$metro_select, 
-                                                                    pattern = "\\-", n = 2)[1], 1, 8), "%"),
+                                loc = cw$locs[cw$metro == input$metro_select],
                                 cutoff = as.character(Sys.Date() - 7))
     
     #submit the query, return as fn() output
@@ -170,8 +188,7 @@ server <- function(input, output) {
     #interpolate the values from input into the sql
     map_query <- sqlInterpolate(natrent, map_sql,
                                 metro = input$metro_select,
-                                loc = paste0(substr(str_split_fixed(input$metro_select, 
-                                                                    pattern = "\\-", n = 2)[1], 1, 8), "%"),
+                                loc = cw$locs[cw$metro == input$metro_select],
                                 county = input$county_select,
                                 beds = input$bed_size_select,
                                 quantile = input$quantile_select)
@@ -202,7 +219,7 @@ server <- function(input, output) {
     validate(
       need(nrow(map_query_result()) > 0, "")
     )
-      
+
     #format the labels for the hover over tooltip
     labels <- sprintf(
       "<strong>Tract: %s</strong><br/>%gth Quantile: $%g",
