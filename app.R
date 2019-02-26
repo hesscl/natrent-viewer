@@ -150,7 +150,7 @@ server <- function(input, output) {
                      e.clean_beds = ?beds AND
                      e.listing_loc = ?loc
                GROUP BY f.geoid, f.statefp, f.countyfp, f.geometry
-               HAVING count(*) >= 2
+               HAVING count(*) >= 5
                ORDER BY f.geoid"
     
   #compute n per county with names for input dropdown
