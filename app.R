@@ -36,14 +36,14 @@ locs <- natrent %>%
   distinct(listing_loc) %>%
   arrange(listing_loc) %>%
   pull(listing_loc) 
-locs[59] <- "New York"
-locs[96] <- "Washington"
+locs[61] <- "New York"
+locs[99] <- "Washington"
 
 #create a vector of the smaller metros with same/similar names to ones we scrape
 match_collisions <- c("Albany, OR", "Albany, GA",  "Anniston-Oxford-Jacksonville, AL",
                       "Charleston, WV", "Charlottesville, VA", "Columbia, MO", "Columbus, GA-AL", 
                       "Cleveland, TN", "Columbus, IN", "Greenville, NC", 
-                      "Deltona-Daytona Beach-Ormond Beach, FL", "Jackson, MI", "Jackson, TN",
+                      "Jackson, MI", "Jackson, TN",
                       "Jacksonville, NC",  "Rochester, MN", "Springfield, OH",  "Portland-South Portland, ME",
                       "Springfield, MO", "Springfield, IL", "Wichita Falls, TX")
 
@@ -59,15 +59,20 @@ metros <- natrent %>%
   pull(name)
 
 #accomodate the honolulu weirdness
-metros <- c(metros[1:37], metros[93], metros[38:69], "Poughkeepsie-Newburgh-Middletown, NY", metros[70:92], metros[94:98])
+metros <- c(metros[1:38], metros[96], metros[39:71], "Poughkeepsie-Newburgh-Middletown, NY", metros[72:95], metros[97:101])
 
 #compile a crosswalk
 cw <- cbind.data.frame(locs, metros, stringsAsFactors = FALSE)
 
 #restore original loc names
-cw[59, 1] <- "New York City"
-cw[96, 1] <- "Washington DC"
+cw[61, 1] <- "New York City"
+cw[99, 1] <- "Washington DC"
 
+#add in Durham
+cw[nrow(cw)+1,] <- cbind("Raleigh", "Durham-Chapel Hill, NC")
+
+#alphabetize by metro name
+cw <- cw %>% arrange(metros)
 
 #### Application --------------------------------------------------------------
 
@@ -150,7 +155,7 @@ server <- function(input, output) {
                      e.clean_beds = ?beds AND
                      e.listing_loc = ?loc
                GROUP BY f.geoid, f.statefp, f.countyfp, f.geometry
-               HAVING count(*) >= 5
+               HAVING count(*) >= 4
                ORDER BY f.geoid"
     
   #compute n per county with names for input dropdown
