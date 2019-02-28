@@ -148,7 +148,7 @@ server <- function(input, output) {
                            SELECT b.statefp, b.countyfp, a.cbsafp, a.name AS metro_name, b.name AS county_name
                            FROM cbsa17 a
                            INNER JOIN county17 b ON a.cbsafp = b.cbsafp
-                           WHERE a.name = ?metro AND b.name = ?county
+                           WHERE a.name = ?metro AND b.countyfp IN (?county)
                      ) d ON c.statefp = d.statefp AND c.countyfp = d.countyfp
                ) f ON ST_Within(e.geometry, f.geometry)
                WHERE e.listing_date >= '2019-01-01' AND
@@ -159,17 +159,17 @@ server <- function(input, output) {
                ORDER BY f.geoid"
     
   #compute n per county with names for input dropdown
-  cty_sql <- "SELECT count(*) AS cty_n, d.name
+  cty_sql <- "SELECT count(*) AS cty_n, d.name, d.countyfp
               FROM clean c
               INNER JOIN (
-                          SELECT a.name, a.geometry
+                          SELECT a.name, a.geometry, a.countyfp
                           FROM county17 a
                           JOIN cbsa17 b ON a.cbsafp = b.cbsafp
                           WHERE b.name = ?metro 
               ) d ON ST_Within(c.geometry, d.geometry)
               WHERE c.listing_date >= ?cutoff AND
               c.listing_loc = ?loc
-              GROUP BY d.name
+              GROUP BY d.name, d.countyfp
               ORDER BY cty_n DESC"
   
   #### Assign reactive expressions for the query results
@@ -190,11 +190,14 @@ server <- function(input, output) {
   #create a reactive data frame for caching the primary query result
   map_query_result <- reactive({
     
+    #trying a workaround to supply a list to sqlInterpolate
+    cty_string <- data.frame(val = paste0("'", input$county_select, "'", collapse = ","))
+    
     #interpolate the values from input into the sql
     map_query <- sqlInterpolate(natrent, map_sql,
                                 metro = input$metro_select,
                                 loc = cw$locs[cw$metro == input$metro_select],
-                                county = input$county_select,
+                                county = cty_string$val,
                                 beds = input$bed_size_select,
                                 quantile = input$quantile_select)
     
@@ -207,8 +210,12 @@ server <- function(input, output) {
   #populate the counties input dropdown based on metro selection
   output$county_select <- renderUI({
     
-    selectInput("county_select", "County:", 
-                choices = cty_query_result()$name)
+    choice_vec <- cty_query_result()$countyfp
+    names(choice_vec) <- cty_query_result()$name
+    
+    checkboxGroupInput("county_select", "County:", 
+                       choices = choice_vec,
+                       selected = choice_vec[1])
   })
   
   #### Generate the focal visualizations
