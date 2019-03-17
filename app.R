@@ -27,52 +27,60 @@ onStop(function() {
   poolClose(natrent)
 })
 
+#read in crosswalk between loc and metro values
+cw <- read.csv("./data/cw.csv", stringsAsFactors = FALSE)
+
+#alphabetize by metro name
+cw <- cw %>% arrange(metro)
+
 
 #### Prep values we will want to draw on --------------------------------------
 
 #distinct locations from Craigslist listings
-locs <- natrent %>%
-  tbl("clean") %>%
-  distinct(listing_loc) %>%
-  arrange(listing_loc) %>%
-  pull(listing_loc) 
-locs[61] <- "New York"
-locs[99] <- "Washington"
+#locs <- natrent %>%
+#  tbl("clean") %>%
+#  distinct(listing_loc) %>%
+#  arrange(listing_loc) %>%
+#  pull(listing_loc) 
+#locs[65] <- "New York"
+#locs[106] <- "Washington"
 
 #create a vector of the smaller metros with same/similar names to ones we scrape
-match_collisions <- c("Albany, OR", "Albany, GA",  "Anniston-Oxford-Jacksonville, AL",
-                      "Charleston, WV", "Charlottesville, VA", "Columbia, MO", "Columbus, GA-AL", 
-                      "Cleveland, TN", "Columbus, IN", "Greenville, NC", 
-                      "Jackson, MI", "Jackson, TN",
-                      "Jacksonville, NC",  "Rochester, MN", "Springfield, OH",  "Portland-South Portland, ME",
-                      "Springfield, MO", "Springfield, IL", "Wichita Falls, TX")
+#match_collisions <- c("Albany, OR", "Albany, GA",  "Anniston-Oxford-Jacksonville, AL",
+#                      "Charleston, WV", "Charlottesville, VA", "Columbia, MO", "Columbus, GA-AL", 
+#                      "Cleveland, TN", "Columbus, IN", "Greenville, NC", 
+#                      "Jackson, MI", "Jackson, TN",
+#                      "Jacksonville, NC",  "Rochester, MN", "Springfield, OH",  "Portland-South Portland, ME",
+#                      "Springfield, MO", "Springfield, IL", "Wichita Falls, TX")
 
 #CBSA names
-metros <- natrent %>%
-  tbl("cbsa17") %>%
-  filter(memi == "1") %>%
-  distinct(name) %>%
-  arrange(name) %>%
-  filter(!name %in% match_collisions) %>%
-  collect() %>%
-  filter(str_detect(name, str_flatten(locs, collapse = "|"))) %>%
-  pull(name)
+#metros <- natrent %>%
+#  tbl("cbsa17") %>%
+#  filter(memi == "1") %>%
+#  distinct(name) %>%
+#  arrange(name) %>%
+#  filter(!name %in% match_collisions) %>%
+#  collect() %>%
+#  filter(str_detect(name, str_flatten(locs, collapse = "|"))) %>%
+#  pull(name)
 
 #accomodate the honolulu weirdness
-metros <- c(metros[1:38], metros[96], metros[39:71], "Poughkeepsie-Newburgh-Middletown, NY", metros[72:95], metros[97:101])
+#metros <- c(metros[1:16], "New York-Newark-Jersey City, NY-NJ-PA"
+#            metros[17]
+#            metros[96], 
+#            metros[39:71], 
+#            "Poughkeepsie-Newburgh-Middletown, NY", metros[72:95], metros[97:101])
 
 #compile a crosswalk
-cw <- cbind.data.frame(locs, metros, stringsAsFactors = FALSE)
+#cw <- cbind.data.frame(locs, metros, stringsAsFactors = FALSE)
 
 #restore original loc names
-cw[61, 1] <- "New York City"
-cw[99, 1] <- "Washington DC"
+#cw[61, 1] <- "New York City"
+#cw[99, 1] <- "Washington DC"
 
 #add in Durham
-cw[nrow(cw)+1,] <- cbind("Raleigh", "Durham-Chapel Hill, NC")
+#cw[nrow(cw)+1,] <- cbind("Raleigh", "Durham-Chapel Hill, NC")
 
-#alphabetize by metro name
-cw <- cw %>% arrange(metros)
 
 #### Application --------------------------------------------------------------
 
@@ -99,7 +107,7 @@ ui <- navbarPage("natrent@UW", id = "nav",
                               h3("Map Controls"),
                               
                               #metro input populated based on values queried above
-                              selectInput("metro_select", "Metro:", cw$metros,
+                              selectInput("metro_select", "Metro:", cw$metro,
                                           selected = "Seattle-Tacoma-Bellevue, WA"),
                               
                               #county input populated dynamically based on the metro chosen
@@ -153,7 +161,7 @@ server <- function(input, output) {
                ) f ON ST_Within(e.geometry, f.geometry)
                WHERE e.listing_date >= '2019-01-01' AND
                      e.clean_beds = ?beds AND
-                     e.listing_loc = ?loc
+                     e.listing_loc IN (?loc)
                GROUP BY f.geoid, f.statefp, f.countyfp, f.geometry
                HAVING count(*) >= 4
                ORDER BY f.geoid"
@@ -168,8 +176,9 @@ server <- function(input, output) {
                           WHERE b.name = ?metro 
               ) d ON ST_Within(c.geometry, d.geometry)
               WHERE c.listing_date >= ?cutoff AND
-              c.listing_loc = ?loc
+              c.listing_loc IN (?loc)
               GROUP BY d.name, d.countyfp
+              HAVING count(*) >= 4
               ORDER BY cty_n DESC"
   
   #### Assign reactive expressions for the query results
@@ -177,11 +186,14 @@ server <- function(input, output) {
   #create a reactive data.frame for caching the county values
   cty_query_result <- reactive({
     
+    loc_string <- data.frame(val = paste0("'", cw$loc[cw$metro == input$metro_select], "'", collapse = ","))
+    
+    
     #interpolate the query for metro's county counts of listings for past week, descending n
     cty_query <- sqlInterpolate(natrent, cty_sql,
                                 metro = input$metro_select,
-                                loc = cw$locs[cw$metro == input$metro_select],
-                                cutoff = as.character(Sys.Date()-3))
+                                loc = loc_string$val,
+                                cutoff = as.character(Sys.Date()-7))
     
     #submit the query, return as fn() output
     dbGetQuery(natrent, cty_query)
@@ -193,10 +205,13 @@ server <- function(input, output) {
     #trying a workaround to supply a list to sqlInterpolate
     cty_string <- data.frame(val = paste0("'", input$county_select, "'", collapse = ","))
     
+    loc_string <- data.frame(val = paste0("'", cw$loc[cw$metro == input$metro_select], "'", collapse = ","))
+    
+    
     #interpolate the values from input into the sql
     map_query <- sqlInterpolate(natrent, map_sql,
                                 metro = input$metro_select,
-                                loc = cw$locs[cw$metro == input$metro_select],
+                                loc = loc_string$val,
                                 county = cty_string$val,
                                 beds = input$bed_size_select,
                                 quantile = input$quantile_select)
